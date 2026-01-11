@@ -2,16 +2,16 @@ import { getState } from './state.js';
 import { generateSpritePrompt, SPRITE_SYSTEM_PRIMER, STYLE_PROMPTS } from './prompts.js';
 
 /**
- * Calls OpenAI Image Edit endpoint and returns a data URL.
+ * Calls Google Gemini Image Edit endpoint and returns a data URL.
  * Takes a reference image and transforms it according to the prompt.
  */
-export async function callOpenAIEdit(prompt, imageFile, apiKey) {
+export async function callGeminiEdit(prompt, imageFile, apiKey) {
   const state = getState();
   
   // Use provided API key or fallback to the one in state
   const key = apiKey || state.apiKey;
   
-  console.log('Calling GPT-Image-1 Edit API with:', {
+  console.log('Calling Gemini 2.5 Flash Image API with:', {
     promptLength: prompt.length,
     imageSize: imageFile.size,
     hasApiKey: !!key
@@ -23,49 +23,76 @@ export async function callOpenAIEdit(prompt, imageFile, apiKey) {
       throw new Error('Invalid image type: expected File or Blob');
     }
 
-    const formData = new FormData();
-    formData.append('image', imageFile);
-    formData.append('prompt', prompt);
-    formData.append('model', 'gpt-image-1');
-    formData.append('n', '1');
-    formData.append('size', '1024x1024');
-    formData.append('quality', 'low');
-    formData.append('background', 'transparent');
-
-    // Log any potential issues with formData
-    console.log('FormData prepared:', {
-      imageType: imageFile.type,
-      imageSize: imageFile.size,
-      promptLength: prompt.length,
-      transparentBackground: true
+    // Convert file to base64
+    const base64Image = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.split(',')[1]);
+      reader.onerror = reject;
+      reader.readAsDataURL(imageFile);
     });
 
-    const response = await fetch('https://api.openai.com/v1/images/edits', {
+    // Construct the payload for Gemini 2.5 Flash Image
+    // Note: We are using the generateContent endpoint which supports multimodal input
+    // This model allows prompting with both text and images
+    const payload = {
+      contents: [{
+        parts: [
+          // Prepend system primer as instruction
+          { text: SPRITE_SYSTEM_PRIMER + "\n\n" + prompt },
+          {
+            inline_data: {
+              mime_type: imageFile.type || 'image/png',
+              data: base64Image
+            }
+          }
+        ]
+      }],
+      generationConfig: {
+        responseModalities: ["IMAGE"],
+        imageConfig: {
+            aspectRatio: "1:1" // We want square output
+        }
+      }
+    };
+
+    console.log('Gemini Payload prepared');
+
+    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image:generateContent?key=' + key, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${key}`
+        'Content-Type': 'application/json'
       },
-      body: formData
+      body: JSON.stringify(payload)
     });
 
-    // More detailed error handling
     if (!response.ok) {
       const errorData = await response.json();
-      console.error('OpenAI API error details:', errorData);
+      console.error('Gemini API error details:', errorData);
       throw new Error(errorData.error?.message || `API call failed with status ${response.status}`);
     }
 
     const result = await response.json();
     
-    // Ensure we have the expected data structure
-    if (!result.data || !result.data[0] || !result.data[0].b64_json) {
-      console.error('Unexpected API response format:', result);
-      throw new Error('Invalid response format from OpenAI API');
+    // Check if we have candidates
+    if (!result.candidates || result.candidates.length === 0) {
+       console.error('Unexpected API response format:', result);
+       throw new Error('No candidates returned from Gemini API');
+    }
+
+    const candidate = result.candidates[0];
+
+    // Look for image part in the response
+    const imagePart = candidate.content.parts.find(p => p.inline_data);
+
+    if (!imagePart || !imagePart.inline_data || !imagePart.inline_data.data) {
+       console.error('No image data in response:', result);
+       throw new Error('Invalid response format: No image generated');
     }
     
-    return `data:image/png;base64,${result.data[0].b64_json}`;
+    return `data:${imagePart.inline_data.mime_type};base64,${imagePart.inline_data.data}`;
+
   } catch (error) {
-    console.error('Error in OpenAI API call:', error);
+    console.error('Error in Gemini API call:', error);
     throw error;
   }
 }
@@ -120,37 +147,87 @@ export function readFileAsDataURL(file) {
   });
 }
 
-// API endpoints
-const API_ENDPOINTS = {
-  generateSprite: '/api/generate-sprite',
-};
+// Helper function to convert a data URL to a File object with transparency preserved
+export async function dataURLtoFile(dataUrl, filename) {
+  try {
+    // Validate the dataUrl format
+    if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) {
+      console.error('Invalid data URL format:', dataUrl ? `${dataUrl.substring(0, 20)}...` : 'null or undefined');
+      throw new Error('Invalid data URL format');
+    }
 
-// Helper function to check API key
-function validateApiKey() {
-  const { apiKey } = getState();
-  if (!apiKey) {
-    throw new Error('Please enter your OpenAI API key');
+    // For image data URLs, ensure proper transparency handling
+    if (dataUrl.startsWith('data:image')) {
+      // Create an Image element to load the data URL
+      const img = new Image();
+      await new Promise((resolve, reject) => {
+        img.onload = resolve;
+        img.onerror = () => reject(new Error('Failed to load image from data URL'));
+        img.src = dataUrl;
+      });
+
+      // Create a canvas with the same dimensions as the image
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+
+      // Draw the image with transparency preserved
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0);
+
+      // Convert to PNG blob with transparency
+      return new Promise((resolve, reject) => {
+        canvas.toBlob((blob) => {
+          if (!blob) {
+            reject(new Error('Failed to create image blob'));
+            return;
+          }
+
+          const file = new File([blob], filename, {
+            type: 'image/png',
+            lastModified: Date.now()
+          });
+
+          console.log('Data URL successfully converted to File with transparency:', {
+            size: file.size,
+            type: file.type,
+            dimensions: `${img.width}x${img.height}`
+          });
+
+          resolve(file);
+        }, 'image/png', 1.0);
+      });
+    }
+
+    // Fallback for non-image data URLs
+    console.log('Converting data URL to file using fetch API (fallback)');
+    const res = await fetch(dataUrl);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch data URL: ${res.status} ${res.statusText}`);
+    }
+
+    const blob = await res.blob();
+    return new File([blob], filename, { type: blob.type || 'image/png' });
+  } catch (error) {
+    console.error('Error converting data URL to file:', error);
+    throw new Error(`Failed to convert image: ${error.message}`);
   }
-  return apiKey;
 }
 
-// Helper function to handle API errors
-function handleApiError(error) {
-  console.error('API Error:', error);
-  if (error.response) {
-    throw new Error(error.response.data.error || 'API request failed');
-  }
-  throw error;
+// Validate API Key helper
+function validateApiKey() {
+    const { apiKey } = getState();
+    if (!apiKey) {
+      throw new Error('Please enter your Google Gemini API key');
+    }
+    return apiKey;
 }
 
 // Generate sprite styles
 export async function generateSpriteStyles(imageFile) {
   try {
-    const state = getState();
-    const apiKey = state.apiKey;
-    if (!apiKey) {
-      throw new Error('Please enter your OpenAI API key');
-    }
+    const apiKey = validateApiKey();
 
     // Generate a unique reference token for this character
     const referenceToken = `CHAR_${Date.now().toString(36)}`;
@@ -181,8 +258,8 @@ export async function generateSpriteStyles(imageFile) {
         const prompt = generateSpritePrompt(style.id, 'idle', referenceToken);
         console.log(`Generating style ${style.id} with prompt length ${prompt.length}`);
         
-        // Call the OpenAI API
-        const result = await callOpenAIEdit(prompt, processedImage, apiKey);
+        // Call the Gemini API
+        const result = await callGeminiEdit(prompt, processedImage, apiKey);
         console.log(`Style ${style.id} generation complete`);
         
         return {
@@ -225,11 +302,8 @@ export async function generateSpriteStyles(imageFile) {
 // Generate sprite action
 export async function generateSpriteAction(styleId, actionId, frameIndex = 0, isContinuation = frameIndex > 0) {
   try {
+    const apiKey = validateApiKey();
     const state = getState();
-    const apiKey = state.apiKey;
-    if (!apiKey) {
-      throw new Error('Please enter your OpenAI API key');
-    }
 
     // Debugging: log state information
     console.log('generateSpriteAction state info:', {
@@ -256,17 +330,19 @@ export async function generateSpriteAction(styleId, actionId, frameIndex = 0, is
     
     // First, check if we have previously generated frames for this action
     // and if we're generating a frame after the first one
-    if (isContinuation && frameIndex > 0 && state.generatedFrames && state.generatedFrames[actionId]) {
-      const previousFrames = state.generatedFrames[actionId];
+    if (isContinuation && frameIndex > 0 && state.generatedFrames) {
+      // Find the specific frame from the generatedFrames array
+      const framesForAction = state.generatedFrames.filter(f => f.actionId === actionId && f.styleId === styleId);
       const previousFrameIndex = frameIndex - 1;
+      const prevFrame = framesForAction.find(f => f.frameIndex === previousFrameIndex);
       
       // If the previous frame exists, use it as the input for this frame
       // This creates a chain of generation that maintains consistency
-      if (previousFrames[previousFrameIndex] && previousFrames[previousFrameIndex].imageUrl) {
+      if (prevFrame && prevFrame.imageUrl) {
         try {
           console.log(`SEQUENTIAL ANIMATION: Using frame ${previousFrameIndex} as input for frame ${frameIndex}`);
           const prevFrameFile = await dataURLtoFile(
-            previousFrames[previousFrameIndex].imageUrl, 
+            prevFrame.imageUrl,
             `previous_frame_${previousFrameIndex}.png`
           );
           imageToUse = prevFrameFile;
@@ -351,7 +427,7 @@ export async function generateSpriteAction(styleId, actionId, frameIndex = 0, is
       promptLength: prompt.length
     });
     
-    const result = await callOpenAIEdit(prompt, imageToUse, apiKey);
+    const result = await callGeminiEdit(prompt, imageToUse, apiKey);
 
     return {
       id: actionId,
@@ -366,70 +442,8 @@ export async function generateSpriteAction(styleId, actionId, frameIndex = 0, is
   }
 }
 
-// Helper function to convert a data URL to a File object with transparency preserved
-export async function dataURLtoFile(dataUrl, filename) {
-  try {
-    // Validate the dataUrl format
-    if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) {
-      console.error('Invalid data URL format:', dataUrl ? `${dataUrl.substring(0, 20)}...` : 'null or undefined');
-      throw new Error('Invalid data URL format');
-    }
-    
-    // For image data URLs, ensure proper transparency handling
-    if (dataUrl.startsWith('data:image')) {
-      // Create an Image element to load the data URL
-      const img = new Image();
-      await new Promise((resolve, reject) => {
-        img.onload = resolve;
-        img.onerror = () => reject(new Error('Failed to load image from data URL'));
-        img.src = dataUrl;
-      });
-      
-      // Create a canvas with the same dimensions as the image
-      const canvas = document.createElement('canvas');
-      canvas.width = img.width;
-      canvas.height = img.height;
-      
-      // Draw the image with transparency preserved
-      const ctx = canvas.getContext('2d');
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(img, 0, 0);
-      
-      // Convert to PNG blob with transparency
-      return new Promise((resolve, reject) => {
-        canvas.toBlob((blob) => {
-          if (!blob) {
-            reject(new Error('Failed to create image blob'));
-            return;
-          }
-          
-          const file = new File([blob], filename, { 
-            type: 'image/png',
-            lastModified: Date.now()
-          });
-          
-          console.log('Data URL successfully converted to File with transparency:', {
-            size: file.size,
-            type: file.type,
-            dimensions: `${img.width}x${img.height}`
-          });
-          
-          resolve(file);
-        }, 'image/png', 1.0);
-      });
-    }
-    
-    // Fallback for non-image data URLs
-    console.log('Converting data URL to file using fetch API (fallback)');
-    const res = await fetch(dataUrl);
-    if (!res.ok) {
-      throw new Error(`Failed to fetch data URL: ${res.status} ${res.statusText}`);
-    }
-    
-    const blob = await res.blob();
-    return new File([blob], filename, { type: blob.type || 'image/png' });
-  } catch (error) {
-    console.error('Error converting data URL to file:', error);
-    throw new Error(`Failed to convert image: ${error.message}`);
-  }
-} 
+// Deprecated export for backward compatibility if needed, but updated to use callGeminiEdit if called
+export async function callOpenAIEdit(prompt, imageFile, apiKey) {
+    console.warn('callOpenAIEdit is deprecated, redirecting to callGeminiEdit');
+    return callGeminiEdit(prompt, imageFile, apiKey);
+}

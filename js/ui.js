@@ -254,7 +254,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Validate API key
       const state = getState();
       if (!state.apiKey) {
-        alert('Please enter your OpenAI API key');
+        alert('Please enter your Google Gemini API key');
         apiKeyInput.focus();
         return;
       }

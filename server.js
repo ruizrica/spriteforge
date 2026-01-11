@@ -37,7 +37,7 @@ app.get('/health', (req, res) => {
 
 // Initialize OpenAI client
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY // This will be provided by the client
+  apiKey: "dummy-key" // This will be provided by the client
 });
 
 // Routes

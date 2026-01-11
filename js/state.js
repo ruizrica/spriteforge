@@ -12,7 +12,7 @@ let state = {
 
 // Constants
 const STORAGE_KEYS = {
-  API_KEY: 'openai_api_key'
+  API_KEY: 'gemini_api_key'
 };
 
 export function getState() {
