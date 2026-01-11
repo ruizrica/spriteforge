@@ -280,8 +280,8 @@
       // Load API key on page load
       window.addEventListener('load', function() {
         const apiKey = document.getElementById('apiKey');
-        if (apiKey && localStorage.getItem('openai_api_key')) {
-          apiKey.value = localStorage.getItem('openai_api_key');
+        if (apiKey && localStorage.getItem('gemini_api_key')) {
+          apiKey.value = localStorage.getItem('gemini_api_key');
           console.log('API key loaded from localStorage');
         }
       });
@@ -354,9 +354,9 @@
           <!-- API Key (moved below the upload) -->
           <div class="mb-8">
             <form id="apiKeyForm" onsubmit="event.preventDefault();" autocomplete="off">
-              <input type="text" id="apiUsername" name="username" style="display: none;" autocomplete="username" value="openai" />
-              <label for="apiKey" class="form-label">OpenAI API Key</label>
-              <input type="password" id="apiKey" name="apiKey" class="form-input" placeholder="sk-..." autocomplete="new-password" data-lpignore="true" />
+              <input type="text" id="apiUsername" name="username" style="display: none;" autocomplete="username" value="gemini" />
+              <label for="apiKey" class="form-label">Google Gemini API Key</label>
+              <input type="password" id="apiKey" name="apiKey" class="form-input" placeholder="AIza..." autocomplete="new-password" data-lpignore="true" />
             </form>
           </div>
           
@@ -475,7 +475,7 @@
         const apiKey = document.getElementById('apiKey');
         if (apiKey) {
           apiKey.addEventListener('input', function() {
-            localStorage.setItem('openai_api_key', this.value);
+            localStorage.setItem('gemini_api_key', this.value);
           });
         }
         
